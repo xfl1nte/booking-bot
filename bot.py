@@ -4,6 +4,7 @@ import os
 import re
 from datetime import date, timedelta
 
+import phonenumbers
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -88,6 +89,23 @@ def is_valid_name(name):
     only_allowed = all(ch.isalpha() or ch in " -" for ch in name)
     has_letters = any(ch.isalpha() for ch in name)
     return only_allowed and has_letters
+
+
+def normalize_phone(text, region="RU"):
+    """Приводит номер к виду +79991234567. Возвращает None, если номер некорректный."""
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+    # Только цифры 0-9, обычные пробелы, скобки, дефисы и «+» в начале
+    if not re.fullmatch(r"\+?[0-9 ()-]+", text):
+        return None
+    try:
+        number = phonenumbers.parse(text, region)
+    except phonenumbers.NumberParseException:
+        return None
+    if not phonenumbers.is_valid_number(number):
+        return None
+    return phonenumbers.format_number(number, phonenumbers.PhoneNumberFormat.E164)
 
 
 # ---------- Вопросы на каждом шаге ----------
@@ -231,13 +249,21 @@ async def enter_name(message: Message, state: FSMContext):
 @dp.message(Booking.phone)
 async def enter_phone(message: Message, state: FSMContext):
     if message.contact:
-        phone = message.contact.phone_number
-    else:
-        phone = (message.text or "").strip()
-        digits = re.sub(r"\D", "", phone)
-        if not 10 <= len(digits) <= 15:
-            await ask_phone(message, state, error="Не похоже на номер телефона. ")
+        # Принимаем только собственный контакт, а не пересланный чужой
+        if message.contact.user_id != message.from_user.id:
+            await ask_phone(message, state, error="Пожалуйста, отправьте свой номер. ")
             return
+        raw_phone = message.contact.phone_number
+        # Telegram иногда присылает номер без «+»
+        if not raw_phone.startswith("+"):
+            raw_phone = "+" + raw_phone
+    else:
+        raw_phone = message.text
+
+    phone = normalize_phone(raw_phone)
+    if phone is None:
+        await ask_phone(message, state, error="Не похоже на номер телефона. ")
+        return
     await state.update_data(phone=phone)
     await ask_confirm(message, state)
 
